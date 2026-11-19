@@ -238,9 +238,22 @@ class BatchValidationTest(unittest.TestCase):
 
     def test_bad_gt(self):
         with self.assertRaises(ValidationError):
-            validate_and_normalize([self._row(1, "G", "C", gt="0/0")], self.GENOME)
-        with self.assertRaises(ValidationError):
             validate_and_normalize([self._row(1, "G", "C", gt="1|1")], self.GENOME)
+        with self.assertRaises(ValidationError):
+            validate_and_normalize([self._row(1, "G", "C", gt="./.")], self.GENOME)
+
+    def test_zero_zero_only_for_snp(self):
+        # SNP 的 0/0 合法，归一化后照常返回
+        out = validate_and_normalize(
+            [self._row(1, "G", "C", gt="0/0")], self.GENOME
+        )
+        self.assertEqual(out[0]["gt"], "0/0")
+        self.assertEqual(out[0]["kind"], "SNP")
+        # 插入与缺失不允许 0/0
+        with self.assertRaises(ValidationError):
+            validate_and_normalize([self._row(3, "T", "TT", gt="0/0")], self.GENOME)
+        with self.assertRaises(ValidationError):
+            validate_and_normalize([self._row(3, "TT", "T", gt="0/0")], self.GENOME)
 
     def test_anchor_mismatch_rejected(self):
         with self.assertRaises(ValidationError):

@@ -96,6 +96,15 @@ tbody tr:hover { background: #f8fafc; }
 .detail-link { color: var(--accent); text-decoration: none; font-size: 13px; }
 .detail-link:hover { text-decoration: underline; }
 
+.trio-form {
+  display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; margin-top: 12px;
+}
+.trio-pick { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.trio-pick select {
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+  min-width: 240px; background: #fff; font-size: 14px;
+}
+
 .flashes { margin-bottom: 16px; display: grid; gap: 8px; }
 .flash { padding: 10px 14px; border-radius: 8px; font-size: 14px; border: 1px solid transparent; }
 .flash-success { background: var(--ok-bg); color: var(--ok); border-color: #a7f3d0; }

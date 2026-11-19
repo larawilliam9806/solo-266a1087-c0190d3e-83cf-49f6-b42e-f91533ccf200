@@ -25,6 +25,7 @@
 <section class="card">
   <h2>上传样本 TSV</h2>
   <p class="hint">列：<code>POS（从 1 计数）&nbsp;REF&nbsp;ALT&nbsp;GT</code>，Tab 分隔，可带表头。同名样本重传会替换旧版。</p>
+  <p class="hint">GT 允许 <code>0/1</code>、<code>1/1</code>；单碱基替换还允许 <code>0/0</code>，表示该位点已检测但未检出所列 ALT（纯合参考），仍须通过 REF 核对与重复记录校验。<code>0/0</code> 记录参与三联核查，但不出现在首页汇总与变异详情的检出统计中。</p>
   <form method="post" action="{{ url_for('upload_sample') }}" enctype="multipart/form-data" class="upload">
     <input type="text" name="name" placeholder="样本名称，如 S1" maxlength="128" required>
     <input type="file" name="sample" accept=".tsv,.txt,text/tab-separated-values" required>
@@ -41,7 +42,7 @@
   </p>
   {% if samples %}
   <table>
-    <thead><tr><th>样本</th><th>状态</th><th>变异数</th><th>上传时间</th><th>说明</th><th></th></tr></thead>
+    <thead><tr><th>样本</th><th>状态</th><th>检出变异数</th><th>检测记录数</th><th>上传时间</th><th>说明</th><th></th></tr></thead>
     <tbody>
     {% for s in samples %}
       <tr class="{{ 'row-warn' if s.status == 'NEEDS_REUPLOAD' or s.reference_id != reference.id }}">
@@ -55,7 +56,8 @@
             <span class="tag tag-bad">待重传</span>
           {% endif %}
         </td>
-        <td>{{ s.variant_count }}</td>
+        <td><strong>{{ s.detected_count }}</strong></td>
+        <td>{{ s.variant_count }}{% if s.variant_count > s.detected_count %} <span class="hint">（含 {{ s.variant_count - s.detected_count }} 条 0/0）</span>{% endif %}</td>
         <td>{{ s.uploaded_at }}</td>
         <td class="err">{{ s.error or '' }}</td>
         <td>
@@ -74,8 +76,38 @@
 </section>
 
 <section class="card">
+  <h2>三联核查（双亲 + 子代 · 单碱基位点）</h2>
+  {% set valid_samples = samples | selectattr('status', 'equalto', 'VALID')
+                         | selectattr('reference_id', 'equalto', reference.id) | list %}
+  {% if valid_samples|length >= 3 %}
+  <p class="hint">
+    选择当前参考 #{{ reference.id }} 下三个不同的有效样本，分别作为父亲、母亲与子代。
+    核查在单次快照内完成，只使用当前同一版参考的有效数据；样本重传或参考重验后再次提交即按当前数据核查，所选样本失效时会提示重选。
+    仅核查单碱基替换位点，<code>0/0</code> 视为已检测的纯合参考记录。
+  </p>
+  <form method="post" action="{{ url_for('trio_check') }}" class="trio-form">
+    {% set roles = [('father', '父亲'), ('mother', '母亲'), ('child', '子代')] %}
+    {% for key, label in roles %}
+    <label class="trio-pick">
+      <span>{{ label }}</span>
+      <select name="{{ key }}" required>
+        <option value="" disabled selected>请选择样本…</option>
+        {% for s in valid_samples %}
+        <option value="{{ s.id }}">{{ s.name }}（检出 {{ s.detected_count }} · 检测 {{ s.variant_count }}）</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endfor %}
+    <button type="submit" class="primary">开始核查</button>
+  </form>
+  {% else %}
+  <p class="empty">当前参考下有效样本不足 3 个（现有 {{ valid_samples|length }} 个），暂不能进行三联核查。</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>规范变异汇总</h2>
-  <p class="hint">按参考左对齐去冗余后的规范坐标；仅统计当前参考下有效样本，点击变异查看各样本基因型与原始位点。</p>
+  <p class="hint">按参考左对齐去冗余后的规范坐标；仅统计当前参考下有效样本的<strong>检出记录</strong>（GT 为 0/1 或 1/1；0/0 记录不展示、不计数），点击变异查看各样本基因型与原始位点。</p>
   {% if variants %}
   <table>
     <thead><tr><th>规范位点</th><th>REF</th><th>ALT</th><th>类型</th><th>检出样本数</th><th></th></tr></thead>

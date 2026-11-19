@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}三联核查结果{% endblock %}
+{% block content %}
+<section class="card">
+  <p><a href="{{ url_for('index') }}">← 返回汇总</a></p>
+  <h2>三联核查结果（单碱基替换位点）</h2>
+  <dl class="meta">
+    <dt>参考版本</dt><dd>#{{ check.reference.id }}（{{ check.reference.length }} bp）</dd>
+    <dt>核查时刻</dt><dd>{{ check.checked_at }}</dd>
+    <dt>父亲</dt><dd>{{ check.names.father }}</dd>
+    <dt>母亲</dt><dd>{{ check.names.mother }}</dd>
+    <dt>子代</dt><dd>{{ check.names.child }}</dd>
+  </dl>
+  <p class="hint">
+    本次核查在同一快照事务内完成，三方数据均来自同一时刻、参考 #{{ check.reference.id }} 下的有效样本。
+    共涉及 {{ check.n_loci }} 个单碱基位点：遗传可解释 {{ check.consistent|length }} 个，
+    无法解释 {{ check.violations|length }} 个，缺记录或多 ALT 未判定 {{ check.excluded|length }} 个。
+    GT 中 <code>0/0</code> 表示该样本已检测该位点但未检出所列 ALT（纯合参考）。
+  </p>
+</section>
+
+<section class="card">
+  <h2>一、子代 GT 无法由双亲各传一个等位基因解释的位点</h2>
+  {% if check.violations %}
+  <p class="hint">三方记录齐全且只有一种 ALT（{{ check.violations|length }} 个）。</p>
+  <table>
+    <thead>
+      <tr><th>位点</th><th>REF</th><th>ALT</th>
+          <th>父亲 GT（{{ check.names.father }}）</th>
+          <th>母亲 GT（{{ check.names.mother }}）</th>
+          <th>子代 GT（{{ check.names.child }}）</th></tr>
+    </thead>
+    <tbody>
+    {% for loc in check.violations %}
+      <tr class="row-warn">
+        <td>{{ loc.pos }}</td>
+        <td class="mono">{{ loc.ref }}</td>
+        <td class="mono">{{ loc.alts|join('、') }}</td>
+        {% for r in loc.rows %}
+        <td class="mono"><strong>{{ r.gt or '—' }}</strong></td>
+        {% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">没有发现无法解释的位点。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>二、缺记录或出现多个 ALT 的位点（不做遗传判断）</h2>
+  {% if check.excluded %}
+  <table>
+    <thead>
+      <tr><th>位点</th><th>REF</th><th>出现的 ALT</th>
+          <th>父亲 GT</th><th>母亲 GT</th><th>子代 GT</th><th>原因</th></tr>
+    </thead>
+    <tbody>
+    {% for loc in check.excluded %}
+      <tr class="row-warn">
+        <td>{{ loc.pos }}</td>
+        <td class="mono">{{ loc.ref }}</td>
+        <td class="mono">{{ loc.alts|join('、') if loc.alts else '—' }}</td>
+        {% for r in loc.rows %}
+        <td class="mono">{{ r.gt or '缺记录' }}</td>
+        {% endfor %}
+        <td class="err">{{ loc.reason }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">没有缺记录或多 ALT 的位点。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>三、遗传可解释的位点（附三方 GT）</h2>
+  {% if check.consistent %}
+  <p class="hint">三方记录齐全、单一 ALT，且子代两个等位基因可分别来自父亲与母亲（{{ check.consistent|length }} 个）。</p>
+  <table>
+    <thead>
+      <tr><th>位点</th><th>REF</th><th>ALT</th>
+          <th>父亲 GT</th><th>母亲 GT</th><th>子代 GT</th></tr>
+    </thead>
+    <tbody>
+    {% for loc in check.consistent %}
+      <tr>
+        <td>{{ loc.pos }}</td>
+        <td class="mono">{{ loc.ref }}</td>
+        <td class="mono">{{ loc.alts|join('、') }}</td>
+        {% for r in loc.rows %}
+        <td class="mono">{{ r.gt or '—' }}</td>
+        {% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">没有可解释的位点。</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -81,6 +81,29 @@ def create_app() -> Flask:
         flash("样本已删除，相关变异计数已更新。", "success")
         return redirect(url_for("index"))
 
+    @app.post("/trio-check")
+    def trio_check():
+        def _sid(field: str) -> int | None:
+            raw = request.form.get(field)
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+
+        selection = {
+            "father": _sid("father"),
+            "mother": _sid("mother"),
+            "child": _sid("child"),
+        }
+        try:
+            result = services.run_trio_check(selection)
+        except ValidationError as exc:
+            flash(f"无法进行三联核查，请重新选择样本：{exc}", "error")
+            return redirect(url_for("index"))
+        return render_template("trio.html", check=result)
+
     @app.get("/variants/<int:pos>/<path:alleles>")
     def variant_detail(pos: int, alleles: str):
         if alleles.count(">") != 1:

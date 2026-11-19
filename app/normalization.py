@@ -5,6 +5,12 @@
   * 带锚碱基的纯插入：len(REF)==1 且 len(ALT)>=2，且 ALT[0] == REF
   * 带锚碱基的纯缺失：len(REF)>=2 且 len(ALT)==1，且 REF[0] == ALT
 
+GT 规则：
+  * 0/1（杂合）、1/1（纯合 ALT）适用于所有类型；
+  * 0/0 仅适用于单碱基替换，表示该位点已检测但未检出所申报的 ALT
+    （即纯合参考基因型）。0/0 行同样通过 REF 核对与归一化重复校验，
+    会写入数据库参与三方核查，但不进入首页汇总与变异详情的检出统计。
+
 归一化采用经典 left-align 流程（与 bcftools norm / vt normalize 等价）：
   1. 不断去掉两个等位基因相同的末尾碱基；
   2. 无法去尾时，把事件整体左移一位，在两个等位基因前补参考前缀碱基；
@@ -16,7 +22,9 @@
 from __future__ import annotations
 
 ACGT = frozenset("ACGT")
-VALID_GTS = ("0/1", "1/1")
+# 0/0 仅允许出现在单碱基替换行：表示该位点已检测、但未检出所申报的 ALT
+# （基因型为纯合参考）；插入/缺失行不允许 0/0。
+VALID_GTS = ("0/0", "0/1", "1/1")
 MAX_NAME_LEN = 128
 
 
@@ -103,11 +111,18 @@ def validate_and_normalize(rows: list[dict], ref_seq: str) -> list[dict]:
         if set(ref) - ACGT or set(alt) - ACGT:
             raise ValidationError(f"第 {lineno} 行：REF/ALT 只允许大写 A/C/G/T。")
         if gt not in VALID_GTS:
-            raise ValidationError(f"第 {lineno} 行：GT 只允许 0/1 或 1/1，收到 '{gt}'。")
+            raise ValidationError(
+                f"第 {lineno} 行：GT 只允许 0/0、0/1 或 1/1，收到 '{gt}'。"
+            )
         if pos < 1:
             raise ValidationError(f"第 {lineno} 行：POS 必须从 1 开始计数。")
 
         kind = _classify(ref, alt, lineno)
+        if gt == "0/0" and kind != "SNP":
+            raise ValidationError(
+                f"第 {lineno} 行：GT=0/0（已检测但未检出所列 ALT）仅允许用于"
+                f"单碱基替换，{kind} 类型不允许 0/0。"
+            )
 
         end = pos + len(ref) - 1
         if end > genome_len:

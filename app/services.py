@@ -1,8 +1,9 @@
-"""业务逻辑：参考/样本上传、重验、替换、汇总查询。"""
+"""业务逻辑：参考/样本上传、重验、替换、汇总查询与三联核查。"""
 
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 from .db import read_tx, write_tx
 from .normalization import (
@@ -12,6 +13,7 @@ from .normalization import (
     parse_tsv,
     validate_and_normalize,
 )
+from .trio import ROLES, summarize_trio_loci
 
 
 # --------------------------------------------------------------------------- #
@@ -184,13 +186,20 @@ def get_dashboard() -> dict:
             ).fetchone()["c"],
         }
         samples = conn.execute(
-            "SELECT s.*, (SELECT COUNT(*) FROM sample_variants v WHERE v.sample_id=s.id) "
-            "AS variant_count FROM samples s ORDER BY s.name"
+            "SELECT s.*, "
+            "  (SELECT COUNT(*) FROM sample_variants v WHERE v.sample_id=s.id) "
+            "    AS variant_count, "
+            "  (SELECT COUNT(*) FROM sample_variants v "
+            "   WHERE v.sample_id=s.id AND v.gt <> '0/0') AS detected_count "
+            "FROM samples s ORDER BY s.name"
         ).fetchall()
+        # 首页汇总只统计检出记录（GT 0/0 表示已检测但未检出所列 ALT，
+        # 不参与规范变异汇总与检出样本数）
         variants = conn.execute(
             "SELECT v.pos, v.ref, v.alt, v.kind, COUNT(DISTINCT v.sample_id) AS n_samples "
             "FROM sample_variants v "
             "JOIN samples s ON s.id = v.sample_id AND s.reference_id=? AND s.status='VALID' "
+            "WHERE v.gt <> '0/0' "
             "GROUP BY v.pos, v.ref, v.alt "
             "ORDER BY v.pos, v.ref, v.alt",
             (ref_id,),
@@ -215,6 +224,7 @@ def get_variant_detail(pos: int, ref: str, alt: str) -> dict | None:
             "FROM sample_variants v "
             "JOIN samples s ON s.id = v.sample_id "
             "WHERE v.pos=? AND v.ref=? AND v.alt=? "
+            "AND v.gt <> '0/0' "
             "AND s.reference_id=? AND s.status='VALID' "
             "ORDER BY s.name",
             (pos, ref, alt, current["id"]),
@@ -222,3 +232,91 @@ def get_variant_detail(pos: int, ref: str, alt: str) -> dict | None:
         if not rows:
             return None
         return {"pos": pos, "ref": ref, "alt": alt, "rows": rows}
+
+
+# --------------------------------------------------------------------------- #
+# 三联核查（双亲 + 子代，仅 SNP 位点）
+# --------------------------------------------------------------------------- #
+def run_trio_check(selection: dict[str, int]) -> dict:
+    """在同一快照事务内完成一次三联核查。
+
+    selection: {"father": sample_id, "mother": sample_id, "child": sample_id}
+    三个样本必须互不相同，且都是当前最新参考下的 VALID 样本；
+    所选样本已被重传（id 失效）或在参考重验后变为待重传时，抛出
+    ValidationError 提示重新选择。
+
+    整个核查在单个读事务（快照）内完成，保证「同一时刻、同一版参考下
+    的有效数据」被一次性读取；上传/重验走写锁串行化，不会读到半更新状态。
+    本函数只做只读核查，不持久化任何结果，因此样本重传或参考重验后再次
+    提交即自然使用当前数据；失败的上传本身会整体回滚，原有核查依据保留。
+    """
+    ids = [selection.get(role) for role in ROLES]
+    if any(sid is None for sid in ids):
+        raise ValidationError("请为父亲、母亲、子代三个角色各选择一个样本。")
+    if len(set(ids)) != 3:
+        raise ValidationError("三联核查必须选择三个不同的样本，请重新选择。")
+
+    with read_tx() as conn:
+        current = conn.execute(
+            "SELECT id, length, uploaded_at FROM reference_sequences "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if current is None:
+            raise ValidationError("尚未上传参考序列，无法核查。")
+        ref_id = current["id"]
+
+        chosen: dict[str, sqlite3.Row] = {}
+        for role in ROLES:
+            row = conn.execute(
+                "SELECT id, name, status, reference_id FROM samples WHERE id=?",
+                (selection[role],),
+            ).fetchone()
+            if row is None:
+                raise ValidationError(
+                    "所选样本已失效（可能已被删除或重传），请重新选择三个样本。"
+                )
+            if row["reference_id"] != ref_id or row["status"] != "VALID":
+                raise ValidationError(
+                    f"所选样本「{row['name']}」不是当前参考 #{ref_id} 下的有效样本"
+                    "（参考重验后待重传或属于历史参考），请重新选择。"
+                )
+            chosen[role] = row
+
+        # 仅取单碱基替换记录；0/0 行同样取出（它们是「已检测」的位点证据）
+        records = conn.execute(
+            "SELECT v.sample_id, s.name AS sample, v.pos, v.ref, v.alt, v.gt "
+            "FROM sample_variants v "
+            "JOIN samples s ON s.id = v.sample_id "
+            "WHERE v.sample_id IN (?, ?, ?) "
+            "AND length(v.ref)=1 AND length(v.alt)=1 AND v.ref <> v.alt "
+            "ORDER BY v.pos",
+            ids,
+        ).fetchall()
+
+    role_of_sample = {chosen[r]["id"]: r for r in ROLES}
+    names = {r: chosen[r]["name"] for r in ROLES}
+    flat = [
+        {
+            "sample": rec["sample"],
+            "role": role_of_sample[rec["sample_id"]],
+            "pos": rec["pos"],
+            "ref": rec["ref"],
+            "alt": rec["alt"],
+            "gt": rec["gt"],
+        }
+        for rec in records
+    ]
+    result = summarize_trio_loci(flat, names)
+    result.update(
+        {
+            "reference": dict(current),
+            "names": names,
+            "sample_ids": {r: chosen[r]["id"] for r in ROLES},
+            "checked_at": datetime.now(timezone.utc)
+            .strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "n_loci": len(result["consistent"])
+            + len(result["violations"])
+            + len(result["excluded"]),
+        }
+    )
+    return result

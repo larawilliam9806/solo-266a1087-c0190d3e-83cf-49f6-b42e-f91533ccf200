@@ -127,9 +127,39 @@ class FullWorkflowTest(AppTestBase):
         )
 
     def test_invalid_gt_rejected(self):
-        for bad_gt in ("0/0", "1|1", "./.", "1/0"):
+        for bad_gt in ("1|1", "./.", "1/0"):
             resp = self.upload_sample("BAD", tsv(f"1\tG\tC\t{bad_gt}\n"))
             self.assertIn("GT 只允许", resp.get_data(as_text=True))
+        self.assertEqual(self.db_query("SELECT COUNT(*) c FROM samples")[0]["c"], 0)
+
+    def test_zero_zero_gt_accepted_for_snp_only(self):
+        # SNP 行允许 0/0：已检测但未检出所列 ALT，仍须通过 REF 核对
+        resp = self.upload_sample("S0", tsv("1\tG\tC\t0/0\n"))
+        self.assertIn("成功", resp.get_data(as_text=True))
+        row = self.db_query("SELECT gt, kind FROM sample_variants")[0]
+        self.assertEqual(row["gt"], "0/0")
+        self.assertEqual(row["kind"], "SNP")
+        # 0/0 不进入首页检出汇总
+        self.assertEqual(self.dashboard_map(), {})
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("0/0", page)
+        # 0/0 不出现在变异详情（无检出记录 -> 404）
+        self.assertEqual(self.client.get("/variants/1/G>C").status_code, 404)
+        # 插入/缺失行不允许 0/0
+        resp = self.upload_sample("BAD", tsv("3\tT\tTT\t0/0\n"))
+        self.assertIn("仅允许用于单碱基替换", resp.get_data(as_text=True))
+        resp = self.upload_sample("BAD", tsv("3\tTT\tT\t0/0\n"))
+        self.assertIn("仅允许用于单碱基替换", resp.get_data(as_text=True))
+
+    def test_zero_zero_still_requires_ref_match_and_dedup(self):
+        # 0/0 行的 REF 同样必须与参考一致
+        resp = self.upload_sample("BAD", tsv("1\tT\tC\t0/0\n"))
+        self.assertIn("REF 核对失败", resp.get_data(as_text=True))
+        # 0/0 与同一位点的检出记录冲突（归一化后重复），整份拒绝
+        resp = self.upload_sample(
+            "BAD", tsv("1\tG\tC\t0/0\n1\tG\tC\t0/1\n")
+        )
+        self.assertIn("同一变异", resp.get_data(as_text=True))
         self.assertEqual(self.db_query("SELECT COUNT(*) c FROM samples")[0]["c"], 0)
 
     def test_unsupported_variant_type_rejected(self):
